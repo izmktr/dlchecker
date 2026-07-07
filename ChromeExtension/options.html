@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>DlChecker Options</title>
+    <style>
+      body {
+        font-family: "Yu Gothic UI", sans-serif;
+        margin: 20px;
+        line-height: 1.5;
+      }
+      label {
+        display: block;
+        margin-bottom: 6px;
+      }
+      input[type="text"] {
+        width: min(560px, 100%);
+        padding: 8px;
+      }
+      button {
+        margin-top: 14px;
+        padding: 8px 14px;
+      }
+      #status {
+        margin-top: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>DlChecker 設定</h1>
+
+    <label>
+      <input id="enabled" type="checkbox" /> 連携を有効化
+    </label>
+
+    <label for="endpoint">送信先エンドポイント</label>
+    <input id="endpoint" type="text" placeholder="http://127.0.0.1:48762/ingest" />
+
+    <div>
+      <button id="save">保存</button>
+    </div>
+    <div id="status"></div>
+
+    <script src="options.js"></script>
+  </body>
+</html>

@@ -1,0 +1,16 @@
+{
+  "manifest_version": 3,
+  "name": "DlChecker Bridge",
+  "description": "Sends current page metadata to local DlChecker API.",
+  "version": "0.1.0",
+  "permissions": ["tabs", "storage"],
+  "host_permissions": ["http://127.0.0.1:48762/*"],
+  "background": {
+    "service_worker": "background.js"
+  },
+  "action": {
+    "default_title": "DlChecker",
+    "default_popup": "popup.html"
+  },
+  "options_page": "options.html"
+}
