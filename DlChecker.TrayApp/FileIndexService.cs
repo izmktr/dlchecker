@@ -7,7 +7,8 @@ internal sealed class FileIndexService : IDisposable
 {
     private readonly ConcurrentDictionary<string, IndexedFile> _files = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _sync = new();
-    private FileSystemWatcher? _watcher;
+    private readonly List<FileSystemWatcher> _watchers = new();
+    private List<LinkMapping> _linkMappings = new();
 
     public FileIndexService(string rootFolder)
     {
@@ -28,9 +29,24 @@ internal sealed class FileIndexService : IDisposable
         }
 
         var latest = new Dictionary<string, IndexedFile>(StringComparer.OrdinalIgnoreCase);
-        foreach (var path in Directory.EnumerateFiles(root, "*", SearchOption.AllDirectories))
+        foreach (var path in EnumerateFilesSkippingReparse(root))
         {
-            latest[path] = BuildFile(path);
+            var canonicalPath = CanonicalizePath(path);
+            latest[canonicalPath] = BuildFile(canonicalPath);
+        }
+
+        foreach (var mapping in _linkMappings)
+        {
+            if (!Directory.Exists(mapping.TargetRoot))
+            {
+                continue;
+            }
+
+            foreach (var path in Directory.EnumerateFiles(mapping.TargetRoot, "*", SearchOption.AllDirectories))
+            {
+                var canonicalPath = CanonicalizePath(path);
+                latest[canonicalPath] = BuildFile(canonicalPath);
+            }
         }
 
         _files.Clear();
@@ -79,7 +95,7 @@ internal sealed class FileIndexService : IDisposable
 
     public void Dispose()
     {
-        _watcher?.Dispose();
+        DisposeWatchers();
     }
 
     private static string EnsureFolder(string rootFolder)
@@ -96,43 +112,220 @@ internal sealed class FileIndexService : IDisposable
 
     private void SetupWatcher(string root)
     {
-        _watcher?.Dispose();
+        DisposeWatchers();
+
+        var watchInfo = BuildWatchInfo(root);
+        _linkMappings = watchInfo.LinkMappings;
+
+        foreach (var watchRoot in watchInfo.WatchRoots)
+        {
+            CreateWatcher(watchRoot);
+        }
+    }
+
+    private void CreateWatcher(string root)
+    {
         Directory.CreateDirectory(root);
 
-        _watcher = new FileSystemWatcher(root)
+        var watcher = new FileSystemWatcher(root)
         {
             IncludeSubdirectories = true,
             NotifyFilter = NotifyFilters.FileName | NotifyFilters.LastWrite | NotifyFilters.CreationTime
         };
 
-        _watcher.Created += (_, e) => OnCreated(e.FullPath);
-        _watcher.Renamed += (_, e) => OnRenamed(e.OldFullPath, e.FullPath);
-        _watcher.Deleted += (_, e) => OnDeleted(e.FullPath);
-        _watcher.EnableRaisingEvents = true;
+        watcher.Created += (_, e) => OnCreated(e.FullPath);
+        watcher.Renamed += (_, e) => OnRenamed(e.OldFullPath, e.FullPath);
+        watcher.Deleted += (_, e) => OnDeleted(e.FullPath);
+        watcher.EnableRaisingEvents = true;
+        _watchers.Add(watcher);
+    }
+
+    private void DisposeWatchers()
+    {
+        foreach (var watcher in _watchers)
+        {
+            watcher.Dispose();
+        }
+
+        _watchers.Clear();
+    }
+
+    private static WatchInfo BuildWatchInfo(string root)
+    {
+        var roots = new HashSet<string>(StringComparer.OrdinalIgnoreCase)
+        {
+            Path.GetFullPath(root)
+        };
+        var mappings = new List<LinkMapping>();
+
+        if (!Directory.Exists(root))
+        {
+            return new WatchInfo(roots.ToList(), mappings);
+        }
+
+        foreach (var directory in Directory.EnumerateDirectories(root, "*", SearchOption.AllDirectories))
+        {
+            if (!TryResolveLinkTarget(directory, out var resolvedTarget))
+            {
+                continue;
+            }
+
+            var linkRoot = Path.GetFullPath(directory);
+            var targetRoot = Path.GetFullPath(resolvedTarget);
+            mappings.Add(new LinkMapping(linkRoot, targetRoot));
+            roots.Add(targetRoot);
+        }
+
+        // Longer link roots should be matched first when canonicalizing.
+        mappings = mappings
+            .OrderByDescending(x => x.LinkRoot.Length)
+            .ToList();
+
+        return new WatchInfo(roots.ToList(), mappings);
+    }
+
+    private static bool TryResolveLinkTarget(string path, out string resolvedTarget)
+    {
+        resolvedTarget = string.Empty;
+
+        try
+        {
+            var info = new DirectoryInfo(path);
+            if ((info.Attributes & FileAttributes.ReparsePoint) == 0)
+            {
+                return false;
+            }
+
+            var target = info.ResolveLinkTarget(true);
+            if (target is null || !target.Exists)
+            {
+                return false;
+            }
+
+            resolvedTarget = Path.GetFullPath(target.FullName);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private IEnumerable<string> EnumerateFilesSkippingReparse(string root)
+    {
+        var stack = new Stack<string>();
+        stack.Push(root);
+
+        while (stack.Count > 0)
+        {
+            var current = stack.Pop();
+
+            IEnumerable<string> files;
+            try
+            {
+                files = Directory.EnumerateFiles(current, "*", SearchOption.TopDirectoryOnly);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var file in files)
+            {
+                yield return file;
+            }
+
+            IEnumerable<string> dirs;
+            try
+            {
+                dirs = Directory.EnumerateDirectories(current, "*", SearchOption.TopDirectoryOnly);
+            }
+            catch
+            {
+                continue;
+            }
+
+            foreach (var dir in dirs)
+            {
+                if (IsReparseDirectory(dir))
+                {
+                    continue;
+                }
+
+                stack.Push(dir);
+            }
+        }
+    }
+
+    private static bool IsReparseDirectory(string path)
+    {
+        try
+        {
+            var attr = File.GetAttributes(path);
+            return (attr & FileAttributes.ReparsePoint) != 0;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private string CanonicalizePath(string path)
+    {
+        var fullPath = Path.GetFullPath(path);
+        foreach (var mapping in _linkMappings)
+        {
+            if (!fullPath.StartsWith(mapping.LinkRoot, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            var nextCharIndex = mapping.LinkRoot.Length;
+            if (fullPath.Length > nextCharIndex)
+            {
+                var separator = fullPath[nextCharIndex];
+                if (separator != Path.DirectorySeparatorChar && separator != Path.AltDirectorySeparatorChar)
+                {
+                    continue;
+                }
+            }
+
+            var suffix = fullPath.Length == mapping.LinkRoot.Length
+                ? string.Empty
+                : fullPath[mapping.LinkRoot.Length..];
+            return Path.GetFullPath($"{mapping.TargetRoot}{suffix}");
+        }
+
+        return fullPath;
     }
 
     private void OnCreated(string path)
     {
-        if (Directory.Exists(path) || !File.Exists(path))
+        var canonicalPath = CanonicalizePath(path);
+        if (Directory.Exists(canonicalPath) || !File.Exists(canonicalPath))
         {
             return;
         }
 
-        _files[path] = BuildFile(path);
+        _files[canonicalPath] = BuildFile(canonicalPath);
     }
 
     private void OnRenamed(string oldPath, string newPath)
     {
-        _files.TryRemove(oldPath, out _);
-        if (File.Exists(newPath))
+        var oldCanonicalPath = CanonicalizePath(oldPath);
+        var newCanonicalPath = CanonicalizePath(newPath);
+
+        _files.TryRemove(oldCanonicalPath, out _);
+        if (File.Exists(newCanonicalPath))
         {
-            _files[newPath] = BuildFile(newPath);
+            _files[newCanonicalPath] = BuildFile(newCanonicalPath);
         }
     }
 
     private void OnDeleted(string path)
     {
-        _files.TryRemove(path, out _);
+        var canonicalPath = CanonicalizePath(path);
+        _files.TryRemove(canonicalPath, out _);
     }
 
     private static IndexedFile BuildFile(string path)
@@ -208,3 +401,7 @@ internal sealed class FileIndexService : IDisposable
 internal sealed record IndexedFile(string FileName, string FullPath, string NormalizedName);
 
 internal sealed record MatchResult(string FileName, string FullPath, int MatchCount, int Score);
+
+internal sealed record LinkMapping(string LinkRoot, string TargetRoot);
+
+internal sealed record WatchInfo(IReadOnlyList<string> WatchRoots, List<LinkMapping> LinkMappings);
