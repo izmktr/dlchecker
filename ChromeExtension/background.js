@@ -79,7 +79,10 @@ chrome.downloads.onChanged.addListener(async (downloadDelta) => {
     return;
   }
 
-  await recheckGreenWatchTabs();
+  const filePathOrUrl = await resolveDownloadFileName(downloadDelta.id);
+  const fileName = extractFileNameFromPath(filePathOrUrl);
+
+  await recheckGreenWatchTabs(fileName);
 });
 
 chrome.tabs.onRemoved.addListener(async (tabId) => {
@@ -265,10 +268,16 @@ async function removeGreenWatchTab(tabId) {
   await setGreenWatchTabs(tabs);
 }
 
-async function recheckGreenWatchTabs() {
+async function recheckGreenWatchTabs(downloadedFileName = "") {
   const tabs = await getGreenWatchTabs();
   const keys = Object.keys(tabs);
+  const effectiveDownloadedFileName = downloadedFileName;
+
   if (keys.length === 0) {
+    return;
+  }
+
+  if (!effectiveDownloadedFileName) {
     return;
   }
 
@@ -293,9 +302,17 @@ async function recheckGreenWatchTabs() {
     }
 
     try {
-      const result = await postIngest(watch.payload, watch.endpoint);
-      const hasHighMatch = await updateActionByResult(tabId, result, normalizeThreshold(watch.threshold));
-      await saveLastResultForTab(tabId, result, "download");
+      const threshold = normalizeThreshold(watch.threshold);
+      const originalQuery = String(watch.payload?.query || "");
+      const metrics = computeMatchMetrics(originalQuery, effectiveDownloadedFileName);
+      const hasHighMatch = await updateActionByScore(tabId, metrics.score, threshold);
+
+      if (hasHighMatch) {
+        await saveLastResultForTab(
+          tabId,
+          buildDownloadResultPayload(originalQuery, effectiveDownloadedFileName, metrics),
+          "download");
+      }
 
       if (hasHighMatch) {
         delete tabs[key];
@@ -339,6 +356,122 @@ async function postIngest(payload, endpoint) {
     payload,
     response: body
   };
+}
+
+async function resolveDownloadFileName(downloadId) {
+  if (!Number.isFinite(downloadId)) {
+    return "";
+  }
+
+  try {
+    const items = await chrome.downloads.search({ id: downloadId, limit: 1 });
+    const item = items?.[0];
+    return item?.filename || item?.finalUrl || "";
+  } catch (_error) {
+    return "";
+  }
+}
+
+function extractFileNameFromPath(pathOrUrl) {
+  const value = String(pathOrUrl || "");
+  if (!value) {
+    return "";
+  }
+
+  const replaced = value.replace(/\\/g, "/");
+  const lastSegment = replaced.split("/").filter(Boolean).pop() || "";
+  try {
+    return decodeURIComponent(lastSegment);
+  } catch (_error) {
+    return lastSegment;
+  }
+}
+
+function buildDownloadResultPayload(query, downloadedFileName, metrics) {
+  return {
+    ok: true,
+    status: 200,
+    payload: {
+      query,
+      title: downloadedFileName,
+      url: ""
+    },
+    response: {
+      query,
+      count: 1,
+      results: [
+        {
+          fileName: downloadedFileName,
+          fullPath: "",
+          matchCount: metrics.matchCount,
+          score: metrics.score
+        }
+      ]
+    }
+  };
+}
+
+function computeMatchMetrics(query, downloadedFileName) {
+  const normalizedQuery = normalizeMatchToken(query);
+  const normalizedFileName = normalizeMatchToken(downloadedFileName);
+  if (!normalizedQuery || !normalizedFileName) {
+    return { matchCount: 0, score: 0 };
+  }
+
+  const matchCount = longestCommonSubsequenceLength(normalizedQuery, normalizedFileName);
+  const denominator = normalizedFileName.length;
+  const score = denominator === 0
+    ? 0
+    : Math.max(0, Math.min(100, Math.round((matchCount / denominator) * 100)));
+
+  return { matchCount, score };
+}
+
+function normalizeMatchToken(input) {
+  const fileName = extractFileNameFromPath(String(input || ""));
+  const stem = fileName.replace(/\.[^./\\]+$/, "");
+  return stem.toLowerCase().replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function longestCommonSubsequenceLength(a, b) {
+  if (!a || !b) {
+    return 0;
+  }
+
+  const previous = new Uint16Array(b.length + 1);
+  const current = new Uint16Array(b.length + 1);
+  for (let i = 1; i <= a.length; i++) {
+    for (let j = 1; j <= b.length; j++) {
+      if (a[i - 1] === b[j - 1]) {
+        current[j] = previous[j - 1] + 1;
+      } else {
+        current[j] = Math.max(current[j - 1], previous[j]);
+      }
+    }
+
+    previous.set(current);
+    current.fill(0);
+  }
+
+  return previous[b.length];
+}
+
+async function updateActionByScore(tabId, score, threshold) {
+  if (!Number.isInteger(tabId)) {
+    return false;
+  }
+
+  if (score >= threshold) {
+    await chrome.action.setBadgeText({ tabId, text: "!" });
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: "#d93025" });
+    await chrome.action.setTitle({ tabId, title: `DlChecker: 一致候補あり (max ${score})` });
+    return true;
+  }
+
+  await chrome.action.setBadgeText({ tabId, text: "✓" });
+  await chrome.action.setBadgeBackgroundColor({ tabId, color: "#188038" });
+  await chrome.action.setTitle({ tabId, title: `DlChecker: 一致候補なし (max ${Math.max(0, score)})` });
+  return false;
 }
 
 function pickQuery(title, url) {
