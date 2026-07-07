@@ -1,6 +1,7 @@
 const DEFAULT_ENDPOINT = "http://127.0.0.1:48762/ingest";
 const DEFAULT_ENABLED = true;
 const DEFAULT_THRESHOLD = 80;
+const GREEN_WATCH_TABS_KEY = "greenWatchTabs";
 
 chrome.runtime.onInstalled.addListener(async () => {
   const current = await chrome.storage.sync.get(["endpoint", "enabled", "threshold", "targetUrls"]);
@@ -28,6 +29,7 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
   }
 
   if (!/^https?:\/\//i.test(tab.url)) {
+    await removeGreenWatchTab(tab.id);
     return;
   }
 
@@ -39,11 +41,13 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
   ]);
 
   if (enabled === false) {
+    await removeGreenWatchTab(tab.id);
     return;
   }
 
   const shouldInvestigate = isTargetUrl(tab.url, targetUrls);
   if (!shouldInvestigate) {
+    await removeGreenWatchTab(tab.id);
     return;
   }
 
@@ -56,15 +60,31 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
 
   try {
     const result = await postIngest(payload, endpoint || DEFAULT_ENDPOINT);
-    await updateActionByResult(tab.id, result, normalizeThreshold(threshold));
+    const normalizedThreshold = normalizeThreshold(threshold);
+    const hasHighMatch = await updateActionByResult(tab.id, result, normalizedThreshold);
+    await updateGreenWatchState(tab.id, {
+      endpoint: endpoint || DEFAULT_ENDPOINT,
+      threshold: normalizedThreshold,
+      payload,
+      hasHighMatch
+    });
     await saveLastResultForTab(tab.id, result, "auto");
   } catch (_error) {
     // Local app may be stopped; ignore to keep extension quiet.
   }
 });
 
+chrome.downloads.onChanged.addListener(async (downloadDelta) => {
+  if (!downloadDelta?.state || downloadDelta.state.current !== "complete") {
+    return;
+  }
+
+  await recheckGreenWatchTabs();
+});
+
 chrome.tabs.onRemoved.addListener(async (tabId) => {
   await chrome.storage.session.remove(tabResultKey(tabId));
+  await removeGreenWatchTab(tabId);
 });
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -132,7 +152,15 @@ async function runCurrentTabIngest() {
     topN: 5
   };
 
+  const threshold = normalizeThreshold((await chrome.storage.sync.get(["threshold"]))?.threshold);
   const result = await postIngest(payload, endpoint || DEFAULT_ENDPOINT);
+  const hasHighMatch = await updateActionByResult(tab.id, result, threshold);
+  await updateGreenWatchState(tab.id, {
+    endpoint: endpoint || DEFAULT_ENDPOINT,
+    threshold,
+    payload,
+    hasHighMatch
+  });
   await saveLastResultForTab(tab.id, result, "manual");
   return result;
 }
@@ -167,6 +195,10 @@ function tabResultKey(tabId) {
   return `lastResultTab_${tabId}`;
 }
 
+function greenWatchTabKey(tabId) {
+  return String(tabId);
+}
+
 async function saveLastResultForTab(tabId, result, source) {
   if (!Number.isInteger(tabId)) {
     return;
@@ -179,6 +211,101 @@ async function saveLastResultForTab(tabId, result, source) {
       result
     }
   });
+}
+
+async function getGreenWatchTabs() {
+  const data = await chrome.storage.session.get([GREEN_WATCH_TABS_KEY]);
+  const tabs = data[GREEN_WATCH_TABS_KEY];
+  if (!tabs || typeof tabs !== "object") {
+    return {};
+  }
+
+  return tabs;
+}
+
+async function setGreenWatchTabs(tabs) {
+  await chrome.storage.session.set({
+    [GREEN_WATCH_TABS_KEY]: tabs
+  });
+}
+
+async function updateGreenWatchState(tabId, options) {
+  if (!Number.isInteger(tabId)) {
+    return;
+  }
+
+  const tabs = await getGreenWatchTabs();
+  const key = greenWatchTabKey(tabId);
+
+  if (options.hasHighMatch) {
+    delete tabs[key];
+  } else {
+    tabs[key] = {
+      endpoint: options.endpoint,
+      threshold: options.threshold,
+      payload: options.payload
+    };
+  }
+
+  await setGreenWatchTabs(tabs);
+}
+
+async function removeGreenWatchTab(tabId) {
+  if (!Number.isInteger(tabId)) {
+    return;
+  }
+
+  const tabs = await getGreenWatchTabs();
+  const key = greenWatchTabKey(tabId);
+  if (!(key in tabs)) {
+    return;
+  }
+
+  delete tabs[key];
+  await setGreenWatchTabs(tabs);
+}
+
+async function recheckGreenWatchTabs() {
+  const tabs = await getGreenWatchTabs();
+  const keys = Object.keys(tabs);
+  if (keys.length === 0) {
+    return;
+  }
+
+  for (const key of keys) {
+    const tabId = Number.parseInt(key, 10);
+    if (!Number.isInteger(tabId)) {
+      delete tabs[key];
+      continue;
+    }
+
+    const watch = tabs[key];
+    if (!watch?.payload || !watch?.endpoint) {
+      delete tabs[key];
+      continue;
+    }
+
+    try {
+      await chrome.tabs.get(tabId);
+    } catch (_error) {
+      delete tabs[key];
+      continue;
+    }
+
+    try {
+      const result = await postIngest(watch.payload, watch.endpoint);
+      const hasHighMatch = await updateActionByResult(tabId, result, normalizeThreshold(watch.threshold));
+      await saveLastResultForTab(tabId, result, "download");
+
+      if (hasHighMatch) {
+        delete tabs[key];
+      }
+    } catch (_error) {
+      // Keep watch registration and retry on next completed download.
+    }
+  }
+
+  await setGreenWatchTabs(tabs);
 }
 
 async function postIngest(payload, endpoint) {
@@ -284,7 +411,7 @@ function isTargetUrl(url, targetUrls) {
 
 async function updateActionByResult(tabId, result, threshold) {
   if (!Number.isInteger(tabId)) {
-    return;
+    return false;
   }
 
   const scores = extractScores(result);
@@ -293,12 +420,13 @@ async function updateActionByResult(tabId, result, threshold) {
     await chrome.action.setBadgeText({ tabId, text: "!" });
     await chrome.action.setBadgeBackgroundColor({ tabId, color: "#d93025" });
     await chrome.action.setTitle({ tabId, title: `DlChecker: 一致候補あり (max ${maxScore})` });
-    return;
+    return true;
   }
 
   await chrome.action.setBadgeText({ tabId, text: "✓" });
   await chrome.action.setBadgeBackgroundColor({ tabId, color: "#188038" });
   await chrome.action.setTitle({ tabId, title: `DlChecker: 一致候補なし (max ${Math.max(0, maxScore)})` });
+  return false;
 }
 
 function extractScores(result) {

@@ -61,7 +61,7 @@ function renderResult(result, meta = {}) {
   const apiRes = result.response || {};
   const list = Array.isArray(apiRes.results) ? apiRes.results : [];
   const top = list.slice(0, 5);
-  const sourceLabel = meta.source === "auto" ? "自動チェック" : "手動チェック";
+  const sourceLabel = getSourceLabel(meta.source);
   const timeText = formatTime(meta.timestamp);
   const queryText = String(apiRes.query || result.payload?.query || "");
 
@@ -254,4 +254,16 @@ function formatTime(timestamp) {
   }
 
   return new Date(timestamp).toLocaleString("ja-JP");
+}
+
+function getSourceLabel(source) {
+  if (source === "auto") {
+    return "自動チェック";
+  }
+
+  if (source === "download") {
+    return "ダウンロード監視";
+  }
+
+  return "手動チェック";
 }
