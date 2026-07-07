@@ -7,21 +7,79 @@
     <style>
       body {
         font-family: "Yu Gothic UI", sans-serif;
-        min-width: 260px;
+        min-width: 360px;
         margin: 12px;
+        color: #202124;
       }
-      p {
-        margin: 0;
-        color: #333;
+
+      h1 {
+        margin: 0 0 10px;
+        font-size: 16px;
+      }
+
+      .controls {
+        display: flex;
+        gap: 8px;
+        margin-bottom: 10px;
+      }
+
+      button {
+        border: 1px solid #0a63c9;
+        background: #0a63c9;
+        color: #fff;
+        border-radius: 6px;
+        padding: 8px 12px;
+        cursor: pointer;
+      }
+
+      button:disabled {
+        opacity: 0.6;
+        cursor: default;
+      }
+
+      #status {
+        margin-bottom: 8px;
+        font-size: 12px;
+      }
+
+      #result {
+        border: 1px solid #d2d5da;
+        border-radius: 8px;
+        padding: 8px;
+        background: #f8f9fb;
+        max-height: 280px;
+        overflow: auto;
+      }
+
+      .small {
+        font-size: 12px;
         line-height: 1.5;
+        color: #444;
       }
+
+      .list {
+        margin: 8px 0 0;
+        padding-left: 18px;
+      }
+
+      .item {
+        margin-bottom: 6px;
+      }
+
       a {
         color: #0a63c9;
       }
     </style>
   </head>
   <body>
-    <p>この拡張はページ読み込み完了時にURL/タイトルをローカルDlCheckerへ送信します。</p>
-    <p><a href="options.html" target="_blank">設定を開く</a></p>
+    <h1>DlChecker</h1>
+    <div class="controls">
+      <button id="run">現在タブで照合</button>
+      <a href="options.html" target="_blank">設定</a>
+    </div>
+    <div id="status" class="small">待機中</div>
+    <div id="result" class="small">まだ実行していません。</div>
+
+    <script src="popup.js"></script>
   </body>
 </html>

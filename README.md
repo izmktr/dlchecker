@@ -28,6 +28,34 @@ dotnet build .\DlChecker.sln
 dotnet run --project .\DlChecker.TrayApp\DlChecker.TrayApp.csproj
 ```
 
+### Release ビルド
+
+```powershell
+dotnet build .\DlChecker.sln -c Release
+```
+
+### 配布用 Publish
+
+自己完結版 (配布先に .NET ランタイム不要、単一 exe):
+
+```powershell
+dotnet publish .\DlChecker.TrayApp\DlChecker.TrayApp.csproj -c Release -r win-x64 --self-contained true /p:PublishSingleFile=true
+```
+
+ランタイム依存版 (配布先に .NET 8 ランタイムが必要):
+
+```powershell
+dotnet publish .\DlChecker.TrayApp\DlChecker.TrayApp.csproj -c Release -r win-x64 --self-contained false
+```
+
+Publish 出力先:
+
+- `.\DlChecker.TrayApp\bin\Release\net8.0-windows\win-x64\publish\`
+
+注意:
+
+- 常駐アプリ起動中は exe がロックされる場合があるため、Publish 前にタスクトレイから終了してください。
+
 デフォルト設定:
 
 - 監視フォルダ: `%USERPROFILE%\Downloads`
@@ -47,6 +75,12 @@ dotnet run --project .\DlChecker.TrayApp\DlChecker.TrayApp.csproj
 
 - タブの読み込み完了時、`url` と `title` を抽出して `POST /ingest` へ送信
 - 送信先 URL は拡張のオプション画面で変更可能
+- ポップアップの「現在タブで照合」を押すと、その時点のタブ情報で `POST /ingest` を実行し、結果をポップアップに表示
+- 自動チェックが実行済みのタブでは、ポップアップを開いた時点で最新の自動チェック結果を表示
+- オプション画面で「自動照合対象 URL 一覧」を改行区切りで設定可能
+- オプション画面で一致しきい値を設定可能 (0-100)
+- 自動照合対象に一致したページのみ判定し、最大スコアがしきい値以上なら拡張アイコンに赤い `!`、未満なら緑の `✓` を表示
+- 自動照合対象 URL に一致しないページではアイコン表示は変更しない
 
 ## API 例
 

@@ -137,60 +137,44 @@ internal sealed class FileIndexService : IDisposable
 
     private static int ComputeScore(string normalizedQuery, string normalizedFileName)
     {
-        if (normalizedQuery == normalizedFileName)
-        {
-            return 100;
-        }
-
-        if (normalizedFileName.Contains(normalizedQuery, StringComparison.Ordinal))
-        {
-            return 95;
-        }
-
-        var distance = Levenshtein(normalizedQuery, normalizedFileName);
-        var maxLen = Math.Max(normalizedQuery.Length, normalizedFileName.Length);
-        if (maxLen == 0)
+        var denominator = normalizedFileName.Length;
+        if (denominator == 0)
         {
             return 0;
         }
 
-        var similarity = 1.0 - ((double)distance / maxLen);
-        var score = (int)Math.Round(similarity * 100, MidpointRounding.AwayFromZero);
+        var matchedLength = LongestCommonSubsequenceLength(normalizedQuery, normalizedFileName);
+        var ratio = (double)matchedLength / denominator;
+        var score = (int)Math.Round(ratio * 100, MidpointRounding.AwayFromZero);
         return Math.Clamp(score, 0, 100);
     }
 
-    private static int Levenshtein(string a, string b)
+    private static int LongestCommonSubsequenceLength(string a, string b)
     {
-        if (a.Length == 0)
+        if (a.Length == 0 || b.Length == 0)
         {
-            return b.Length;
-        }
-
-        if (b.Length == 0)
-        {
-            return a.Length;
+            return 0;
         }
 
         var previous = new int[b.Length + 1];
         var current = new int[b.Length + 1];
 
-        for (var j = 0; j <= b.Length; j++)
-        {
-            previous[j] = j;
-        }
-
         for (var i = 1; i <= a.Length; i++)
         {
-            current[0] = i;
             for (var j = 1; j <= b.Length; j++)
             {
-                var cost = a[i - 1] == b[j - 1] ? 0 : 1;
-                current[j] = Math.Min(
-                    Math.Min(current[j - 1] + 1, previous[j] + 1),
-                    previous[j - 1] + cost);
+                if (a[i - 1] == b[j - 1])
+                {
+                    current[j] = previous[j - 1] + 1;
+                }
+                else
+                {
+                    current[j] = Math.Max(current[j - 1], previous[j]);
+                }
             }
 
             (previous, current) = (current, previous);
+            Array.Clear(current, 0, current.Length);
         }
 
         return previous[b.Length];

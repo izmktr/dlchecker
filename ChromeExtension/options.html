@@ -18,6 +18,17 @@
         width: min(560px, 100%);
         padding: 8px;
       }
+      input[type="number"] {
+        width: 120px;
+        padding: 8px;
+      }
+      textarea {
+        width: min(720px, 100%);
+        min-height: 140px;
+        padding: 8px;
+        font-family: Consolas, "Yu Gothic UI", sans-serif;
+        line-height: 1.4;
+      }
       button {
         margin-top: 14px;
         padding: 8px 14px;
@@ -36,6 +47,15 @@
 
     <label for="endpoint">送信先エンドポイント</label>
     <input id="endpoint" type="text" placeholder="http://127.0.0.1:48762/ingest" />
+
+    <label for="threshold">一致しきい値 (0-100)</label>
+    <input id="threshold" type="number" min="0" max="100" step="1" />
+
+    <label for="targetUrls">自動照合対象 URL 一覧 (改行区切り)</label>
+    <textarea
+      id="targetUrls"
+      placeholder="https://example.com/downloads\nhttps://files.example.net/*"
+    ></textarea>
 
     <div>
       <button id="save">保存</button>

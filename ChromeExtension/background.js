@@ -1,13 +1,20 @@
 const DEFAULT_ENDPOINT = "http://127.0.0.1:48762/ingest";
 const DEFAULT_ENABLED = true;
+const DEFAULT_THRESHOLD = 80;
 
 chrome.runtime.onInstalled.addListener(async () => {
-  const current = await chrome.storage.sync.get(["endpoint", "enabled"]);
+  const current = await chrome.storage.sync.get(["endpoint", "enabled", "threshold", "targetUrls"]);
   if (!current.endpoint) {
     await chrome.storage.sync.set({ endpoint: DEFAULT_ENDPOINT });
   }
   if (typeof current.enabled !== "boolean") {
     await chrome.storage.sync.set({ enabled: DEFAULT_ENABLED });
+  }
+  if (!Number.isFinite(current.threshold)) {
+    await chrome.storage.sync.set({ threshold: DEFAULT_THRESHOLD });
+  }
+  if (typeof current.targetUrls !== "string") {
+    await chrome.storage.sync.set({ targetUrls: "" });
   }
 });
 
@@ -24,8 +31,19 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
     return;
   }
 
-  const { enabled, endpoint } = await chrome.storage.sync.get(["enabled", "endpoint"]);
+  const { enabled, endpoint, threshold, targetUrls } = await chrome.storage.sync.get([
+    "enabled",
+    "endpoint",
+    "threshold",
+    "targetUrls"
+  ]);
+
   if (enabled === false) {
+    return;
+  }
+
+  const shouldInvestigate = isTargetUrl(tab.url, targetUrls);
+  if (!shouldInvestigate) {
     return;
   }
 
@@ -36,17 +54,165 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
     topN: 5
   };
 
-  const targetEndpoint = endpoint || DEFAULT_ENDPOINT;
   try {
-    await fetch(targetEndpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload)
-    });
+    const result = await postIngest(payload, endpoint || DEFAULT_ENDPOINT);
+    await updateActionByResult(tab.id, result, normalizeThreshold(threshold));
+    await saveLastResultForTab(tab.id, result, "auto");
   } catch (_error) {
     // Local app may be stopped; ignore to keep extension quiet.
   }
 });
+
+chrome.tabs.onRemoved.addListener(async (tabId) => {
+  await chrome.storage.session.remove(tabResultKey(tabId));
+});
+
+chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+  if (!message) {
+    return false;
+  }
+
+  if (message.type === "dlchecker:runCurrentTab") {
+    runCurrentTabIngest()
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          ok: false,
+          error: error?.message || "Unknown error"
+        });
+      });
+
+    return true;
+  }
+
+  if (message.type === "dlchecker:getCurrentTabLastResult") {
+    getCurrentTabLastResult()
+      .then(sendResponse)
+      .catch((error) => {
+        sendResponse({
+          found: false,
+          error: error?.message || "Unknown error"
+        });
+      });
+
+    return true;
+  }
+
+  return false;
+});
+
+async function runCurrentTabIngest() {
+  const tab = await getCurrentActiveTab();
+  if (!tab || !tab.url || !tab.title) {
+    return {
+      ok: false,
+      error: "現在のタブ情報を取得できませんでした"
+    };
+  }
+
+  if (!/^https?:\/\//i.test(tab.url)) {
+    return {
+      ok: false,
+      error: "http/https のページで実行してください"
+    };
+  }
+
+  const { enabled, endpoint } = await chrome.storage.sync.get(["enabled", "endpoint"]);
+  if (enabled === false) {
+    return {
+      ok: false,
+      error: "拡張連携が無効です"
+    };
+  }
+
+  const payload = {
+    url: tab.url,
+    title: tab.title,
+    query: pickQuery(tab.title, tab.url),
+    topN: 5
+  };
+
+  const result = await postIngest(payload, endpoint || DEFAULT_ENDPOINT);
+  await saveLastResultForTab(tab.id, result, "manual");
+  return result;
+}
+
+async function getCurrentTabLastResult() {
+  const tab = await getCurrentActiveTab();
+  if (!tab || !Number.isInteger(tab.id)) {
+    return { found: false };
+  }
+
+  const key = tabResultKey(tab.id);
+  const data = await chrome.storage.session.get([key]);
+  const record = data[key];
+  if (!record) {
+    return { found: false };
+  }
+
+  return {
+    found: true,
+    source: record.source,
+    timestamp: record.timestamp,
+    result: record.result
+  };
+}
+
+async function getCurrentActiveTab() {
+  const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+  return tabs[0];
+}
+
+function tabResultKey(tabId) {
+  return `lastResultTab_${tabId}`;
+}
+
+async function saveLastResultForTab(tabId, result, source) {
+  if (!Number.isInteger(tabId)) {
+    return;
+  }
+
+  await chrome.storage.session.set({
+    [tabResultKey(tabId)]: {
+      source,
+      timestamp: Date.now(),
+      result
+    }
+  });
+}
+
+async function postIngest(payload, endpoint) {
+  const response = await fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload)
+  });
+
+  let body = null;
+  try {
+    body = await response.json();
+  } catch (_error) {
+    body = null;
+  }
+
+  if (!response.ok) {
+    return {
+      ok: false,
+      status: response.status,
+      error: body?.error || `HTTP ${response.status}`,
+      endpoint,
+      payload
+    };
+  }
+
+  return {
+    ok: true,
+    status: response.status,
+    endpoint,
+    payload,
+    response: body
+  };
+}
 
 function pickQuery(title, url) {
   const byTitle = sanitize(title);
@@ -70,4 +236,79 @@ function sanitize(input) {
     .replace(/[(){}【】「」\-_]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeThreshold(value) {
+  if (!Number.isFinite(value)) {
+    return DEFAULT_THRESHOLD;
+  }
+
+  return Math.min(100, Math.max(0, Number(value)));
+}
+
+function splitTargetUrls(targetUrls) {
+  if (typeof targetUrls !== "string") {
+    return [];
+  }
+
+  return targetUrls
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0);
+}
+
+function wildcardToRegExp(pattern) {
+  const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
+  const regexText = `^${escaped.replace(/\*/g, ".*")}$`;
+  return new RegExp(regexText, "i");
+}
+
+function isTargetUrl(url, targetUrls) {
+  const targets = splitTargetUrls(targetUrls);
+  if (targets.length === 0) {
+    return false;
+  }
+
+  return targets.some((target) => {
+    if (target.includes("*")) {
+      return wildcardToRegExp(target).test(url);
+    }
+
+    if (/^https?:\/\//i.test(target)) {
+      return url.startsWith(target);
+    }
+
+    return url.includes(target);
+  });
+}
+
+async function updateActionByResult(tabId, result, threshold) {
+  if (!Number.isInteger(tabId)) {
+    return;
+  }
+
+  const scores = extractScores(result);
+  const maxScore = scores.length > 0 ? Math.max(...scores) : -1;
+  if (maxScore >= threshold) {
+    await chrome.action.setBadgeText({ tabId, text: "!" });
+    await chrome.action.setBadgeBackgroundColor({ tabId, color: "#d93025" });
+    await chrome.action.setTitle({ tabId, title: `DlChecker: 一致候補あり (max ${maxScore})` });
+    return;
+  }
+
+  await chrome.action.setBadgeText({ tabId, text: "✓" });
+  await chrome.action.setBadgeBackgroundColor({ tabId, color: "#188038" });
+  await chrome.action.setTitle({ tabId, title: `DlChecker: 一致候補なし (max ${Math.max(0, maxScore)})` });
+}
+
+function extractScores(result) {
+  if (!result || !result.ok) {
+    return [];
+  }
+
+  const response = result.response || {};
+  const values = Array.isArray(response.results) ? response.results : [];
+  return values
+    .map((item) => Number(item?.score))
+    .filter((score) => Number.isFinite(score));
 }
