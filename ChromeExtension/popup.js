@@ -63,11 +63,12 @@ function renderResult(result, meta = {}) {
   const top = list.slice(0, 5);
   const sourceLabel = meta.source === "auto" ? "自動チェック" : "手動チェック";
   const timeText = formatTime(meta.timestamp);
+  const queryText = String(apiRes.query || result.payload?.query || "");
 
   const header = [
     `<div><strong>種別:</strong> ${escapeHtml(sourceLabel)}</div>`,
     `<div><strong>時刻:</strong> ${escapeHtml(timeText)}</div>`,
-    `<div><strong>Query:</strong> ${escapeHtml(apiRes.query || result.payload?.query || "")}</div>`,
+    `<div><strong>Query:</strong> ${escapeHtml(queryText)}</div>`,
     `<div><strong>件数:</strong> ${list.length}</div>`
   ];
 
@@ -78,7 +79,7 @@ function renderResult(result, meta = {}) {
 
   const items = top
     .map((item) => {
-      const name = escapeHtml(item.fileName || "(no name)");
+      const name = highlightMatch(item.fileName || "(no name)", queryText);
       const score = Number.isFinite(item.score) ? item.score : "-";
       const path = escapeHtml(item.fullPath || "");
       return `<li class="item"><div><strong>${name}</strong> (${score})</div><div>${path}</div></li>`;
@@ -100,6 +101,114 @@ function escapeHtml(value) {
     .replace(/>/g, "&gt;")
     .replace(/\"/g, "&quot;")
     .replace(/'/g, "&#39;");
+}
+
+function highlightMatch(text, query) {
+  const safeText = String(text ?? "");
+  const safeQuery = normalizeForMatch(query);
+  if (!safeQuery) {
+    return escapeHtml(safeText);
+  }
+
+  const normalizedMap = buildNormalizedMap(safeText);
+  const normalizedText = normalizedMap.normalized;
+  if (!normalizedText) {
+    return escapeHtml(safeText);
+  }
+
+  const matchedPositions = findLcsMatchPositions(normalizedText, safeQuery, normalizedMap.positions);
+  if (matchedPositions.length === 0) {
+    return escapeHtml(safeText);
+  }
+
+  const markSet = new Set(matchedPositions);
+  let html = "";
+  let open = false;
+
+  for (let index = 0; index < safeText.length; index++) {
+    const marked = markSet.has(index);
+    const escaped = escapeHtml(safeText[index]);
+
+    if (marked && !open) {
+      html += `<span class="match-highlight">`;
+      open = true;
+    } else if (!marked && open) {
+      html += `</span>`;
+      open = false;
+    }
+
+    html += escaped;
+  }
+
+  if (open) {
+    html += `</span>`;
+  }
+
+  return html;
+}
+
+function normalizeForMatch(value) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/\.[a-z0-9]{1,5}$/i, "")
+    .replace(/[^\p{L}\p{N}]+/gu, "");
+}
+
+function buildNormalizedMap(text) {
+  let normalized = "";
+  const positions = [];
+
+  for (let index = 0; index < text.length; index++) {
+    const ch = text[index];
+    const lowered = ch.toLowerCase();
+    if (/[^\p{L}\p{N}]/u.test(ch)) {
+      continue;
+    }
+
+    normalized += lowered;
+    positions.push(index);
+  }
+
+  return { normalized, positions };
+}
+
+function findLcsMatchPositions(normalizedText, normalizedQuery, positions) {
+  const rows = normalizedText.length;
+  const cols = normalizedQuery.length;
+  if (rows === 0 || cols === 0) {
+    return [];
+  }
+
+  const dp = Array.from({ length: rows + 1 }, () => new Uint16Array(cols + 1));
+  for (let i = 1; i <= rows; i++) {
+    for (let j = 1; j <= cols; j++) {
+      if (normalizedText[i - 1] === normalizedQuery[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+
+  const matchedPositions = [];
+  let i = rows;
+  let j = cols;
+  while (i > 0 && j > 0) {
+    if (normalizedText[i - 1] === normalizedQuery[j - 1]) {
+      matchedPositions.push(positions[i - 1]);
+      i--;
+      j--;
+      continue;
+    }
+
+    if (dp[i - 1][j] >= dp[i][j - 1]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+
+  return matchedPositions.reverse();
 }
 
 function formatTime(timestamp) {

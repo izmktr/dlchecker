@@ -61,11 +61,17 @@ internal sealed class FileIndexService : IDisposable
         topN = Math.Clamp(topN, 1, 20);
 
         return _files.Values
-            .Select(file => new MatchResult(
-                file.FileName,
-                file.FullPath,
-                ComputeScore(normalizedQuery, file.NormalizedName)))
-            .OrderByDescending(x => x.Score)
+            .Select(file =>
+            {
+                var matchCount = LongestCommonSubsequenceLength(normalizedQuery, file.NormalizedName);
+                return new MatchResult(
+                    file.FileName,
+                    file.FullPath,
+                    matchCount,
+                    ComputeScore(matchCount, file.NormalizedName.Length));
+            })
+            .OrderByDescending(x => x.MatchCount)
+            .ThenByDescending(x => x.Score)
             .ThenBy(x => x.FileName, StringComparer.OrdinalIgnoreCase)
             .Take(topN)
             .ToList();
@@ -135,16 +141,14 @@ internal sealed class FileIndexService : IDisposable
         return new IndexedFile(fileName, path, Normalize(fileName));
     }
 
-    private static int ComputeScore(string normalizedQuery, string normalizedFileName)
+    private static int ComputeScore(int matchCount, int denominator)
     {
-        var denominator = normalizedFileName.Length;
         if (denominator == 0)
         {
             return 0;
         }
 
-        var matchedLength = LongestCommonSubsequenceLength(normalizedQuery, normalizedFileName);
-        var ratio = (double)matchedLength / denominator;
+        var ratio = (double)matchCount / denominator;
         var score = (int)Math.Round(ratio * 100, MidpointRounding.AwayFromZero);
         return Math.Clamp(score, 0, 100);
     }
@@ -203,4 +207,4 @@ internal sealed class FileIndexService : IDisposable
 
 internal sealed record IndexedFile(string FileName, string FullPath, string NormalizedName);
 
-internal sealed record MatchResult(string FileName, string FullPath, int Score);
+internal sealed record MatchResult(string FileName, string FullPath, int MatchCount, int Score);
