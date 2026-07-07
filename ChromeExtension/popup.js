@@ -79,7 +79,7 @@ function renderResult(result, meta = {}) {
 
   const items = top
     .map((item) => {
-      const name = highlightMatch(item.fileName || "(no name)", queryText);
+      const name = highlightFileName(item.fileName || "(no name)", queryText);
       const score = Number.isFinite(item.score) ? item.score : "-";
       const path = escapeHtml(item.fullPath || "");
       return `<li class="item"><div><strong>${name}</strong> (${score})</div><div>${path}</div></li>`;
@@ -145,6 +145,18 @@ function highlightMatch(text, query) {
   }
 
   return html;
+}
+
+function highlightFileName(fileName, query) {
+  const safeName = String(fileName ?? "");
+  const lastDotIndex = safeName.lastIndexOf(".");
+  if (lastDotIndex <= 0) {
+    return highlightMatch(safeName, query);
+  }
+
+  const stem = safeName.slice(0, lastDotIndex);
+  const extension = safeName.slice(lastDotIndex);
+  return `${highlightMatch(stem, query)}${escapeHtml(extension)}`;
 }
 
 function normalizeForMatch(value) {
