@@ -117,31 +117,25 @@ function highlightMatch(text, query) {
   }
 
   const matchedPositions = findLcsMatchPositions(normalizedText, safeQuery, normalizedMap.positions);
-  if (matchedPositions.length === 0) {
+  const highlightRanges = buildHighlightRanges(matchedPositions);
+  if (highlightRanges.length === 0) {
     return escapeHtml(safeText);
   }
 
-  const markSet = new Set(matchedPositions);
   let html = "";
-  let open = false;
+  let cursor = 0;
 
-  for (let index = 0; index < safeText.length; index++) {
-    const marked = markSet.has(index);
-    const escaped = escapeHtml(safeText[index]);
-
-    if (marked && !open) {
-      html += `<span class="match-highlight">`;
-      open = true;
-    } else if (!marked && open) {
-      html += `</span>`;
-      open = false;
+  for (const [start, end] of highlightRanges) {
+    if (cursor < start) {
+      html += escapeHtml(safeText.slice(cursor, start));
     }
 
-    html += escaped;
+    html += `<span class="match-highlight">${escapeHtml(safeText.slice(start, end))}</span>`;
+    cursor = end;
   }
 
-  if (open) {
-    html += `</span>`;
+  if (cursor < safeText.length) {
+    html += escapeHtml(safeText.slice(cursor));
   }
 
   return html;
@@ -221,6 +215,37 @@ function findLcsMatchPositions(normalizedText, normalizedQuery, positions) {
   }
 
   return matchedPositions.reverse();
+}
+
+function buildHighlightRanges(matchedPositions) {
+  if (matchedPositions.length === 0) {
+    return [];
+  }
+
+  const ranges = [];
+  let start = matchedPositions[0];
+  let previous = matchedPositions[0];
+
+  for (let index = 1; index < matchedPositions.length; index++) {
+    const current = matchedPositions[index];
+    if (current === previous + 1) {
+      previous = current;
+      continue;
+    }
+
+    if (previous - start + 1 >= 3) {
+      ranges.push([start, previous + 1]);
+    }
+
+    start = current;
+    previous = current;
+  }
+
+  if (previous - start + 1 >= 3) {
+    ranges.push([start, previous + 1]);
+  }
+
+  return ranges;
 }
 
 function formatTime(timestamp) {
