@@ -66,6 +66,8 @@ internal sealed class FileIndexService : IDisposable
         }
     }
 
+    private const int MinMatchScore = 70;
+
     public IReadOnlyList<MatchResult> Match(string query, int topN)
     {
         var normalizedQuery = Normalize(query);
@@ -86,7 +88,8 @@ internal sealed class FileIndexService : IDisposable
                     matchCount,
                     ComputeScore(matchCount, file.NormalizedName.Length));
             })
-            .OrderByDescending(x => x.MatchCount)
+            .Where(x => x.Score >= MinMatchScore)
+            .OrderByDescending(x => x.FileName.Length)
             .ThenByDescending(x => x.Score)
             .ThenBy(x => x.FileName, StringComparer.OrdinalIgnoreCase)
             .Take(topN)
