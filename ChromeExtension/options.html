@@ -51,11 +51,16 @@
     <label for="threshold">一致しきい値 (0-100)</label>
     <input id="threshold" type="number" min="0" max="100" step="1" />
 
-    <label for="targetUrls">自動照合対象 URL 一覧 (改行区切り)</label>
+    <label for="targetUrls">自動照合ルール (改行区切り)</label>
     <textarea
       id="targetUrls"
-      placeholder="https://example.com/downloads\nhttps://files.example.net/*"
+      placeholder="https://example.com/downloads\nhttps://files.example.net/* | [SubsPlease], 1080p"
     ></textarea>
+    <div style="max-width: 720px; font-size: 12px; color: #555; margin-top: 4px;">
+      形式: URLパターン | 削除文字列1, 削除文字列2。<br />
+      例: https://files.example.net/* | [SubsPlease], 1080p<br />
+      URLのみの行は従来どおり利用できます。
+    </div>
 
     <div>
       <button id="save">保存</button>

@@ -21,6 +21,17 @@
         display: flex;
         gap: 8px;
         margin-bottom: 10px;
+        align-items: center;
+        flex-wrap: wrap;
+      }
+
+      .query-input {
+        flex: 1 1 220px;
+        min-width: 180px;
+        border: 1px solid #d2d5da;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 13px;
       }
 
       button {
@@ -81,6 +92,7 @@
   <body>
     <h1>DlChecker</h1>
     <div class="controls">
+      <input id="query" class="query-input" type="text" placeholder="任意の検索文字列" />
       <button id="run">現在タブで照合</button>
       <a href="options.html" target="_blank">設定</a>
     </div>

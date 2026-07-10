@@ -45,8 +45,8 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
     return;
   }
 
-  const shouldInvestigate = isTargetUrl(tab.url, targetUrls);
-  if (!shouldInvestigate) {
+  const matchedRule = findMatchedTargetRule(tab.url, targetUrls);
+  if (!matchedRule) {
     await removeGreenWatchTab(tab.id);
     return;
   }
@@ -54,7 +54,7 @@ chrome.tabs.onUpdated.addListener(async (_tabId, changeInfo, tab) => {
   const payload = {
     url: tab.url,
     title: tab.title,
-    query: pickQuery(tab.title, tab.url),
+    query: pickQuery(tab.title, tab.url, matchedRule.removeTokens),
     topN: 5
   };
 
@@ -96,7 +96,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   }
 
   if (message.type === "dlchecker:runCurrentTab") {
-    runCurrentTabIngest()
+    runCurrentTabIngest(message.query)
       .then(sendResponse)
       .catch((error) => {
         sendResponse({
@@ -124,7 +124,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   return false;
 });
 
-async function runCurrentTabIngest() {
+async function runCurrentTabIngest(manualQuery = "") {
   const tab = await getCurrentActiveTab();
   if (!tab || !tab.url || !tab.title) {
     return {
@@ -148,10 +148,12 @@ async function runCurrentTabIngest() {
     };
   }
 
+  const normalizedManualQuery = typeof manualQuery === "string" ? manualQuery.trim() : "";
+
   const payload = {
     url: tab.url,
     title: tab.title,
-    query: pickQuery(tab.title, tab.url),
+    query: normalizedManualQuery || pickQuery(tab.title, tab.url),
     topN: 5
   };
 
@@ -474,8 +476,8 @@ async function updateActionByScore(tabId, score, threshold) {
   return false;
 }
 
-function pickQuery(title, url) {
-  const byTitle = sanitize(title);
+function pickQuery(title, url, removeTokens = []) {
+  const byTitle = sanitize(title, removeTokens);
   if (byTitle.length > 0) {
     return byTitle;
   }
@@ -483,19 +485,40 @@ function pickQuery(title, url) {
   try {
     const parsed = new URL(url);
     const lastPath = parsed.pathname.split("/").filter(Boolean).pop() || "";
-    return sanitize(lastPath);
+    return sanitize(lastPath, removeTokens);
   } catch (_error) {
-    return sanitize(url);
+    return sanitize(url, removeTokens);
   }
 }
 
-function sanitize(input) {
-  return String(input || "")
+function sanitize(input, removeTokens = []) {
+  let text = String(input || "");
+
+  for (const token of normalizeRemoveTokens(removeTokens)) {
+    const tokenPattern = new RegExp(escapeRegExp(token), "gi");
+    text = text.replace(tokenPattern, " ");
+  }
+
+  return text
     .replace(/\.[a-z0-9]{1,5}$/i, "")
     .replace(/\[[^\]]*\]/g, " ")
     .replace(/[(){}【】「」\-_]+/g, " ")
     .replace(/\s+/g, " ")
     .trim();
+}
+
+function normalizeRemoveTokens(removeTokens) {
+  if (!Array.isArray(removeTokens)) {
+    return [];
+  }
+
+  return removeTokens
+    .map((token) => String(token || "").trim())
+    .filter((token) => token.length > 0);
+}
+
+function escapeRegExp(value) {
+  return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function normalizeThreshold(value) {
@@ -517,6 +540,30 @@ function splitTargetUrls(targetUrls) {
     .filter((line) => line.length > 0);
 }
 
+function parseTargetRules(targetUrls) {
+  return splitTargetUrls(targetUrls).map((line) => {
+    const separatorIndex = line.indexOf("|");
+    if (separatorIndex < 0) {
+      return {
+        pattern: line,
+        removeTokens: []
+      };
+    }
+
+    const pattern = line.slice(0, separatorIndex).trim();
+    const removePart = line.slice(separatorIndex + 1).trim();
+    const removeTokens = removePart
+      .split(/[，,]/)
+      .map((token) => token.trim())
+      .filter((token) => token.length > 0);
+
+    return {
+      pattern,
+      removeTokens
+    };
+  }).filter((rule) => rule.pattern.length > 0);
+}
+
 function wildcardToRegExp(pattern) {
   const escaped = pattern.replace(/[.+?^${}()|[\]\\]/g, "\\$&");
   const regexText = `^${escaped.replace(/\*/g, ".*")}$`;
@@ -524,22 +571,34 @@ function wildcardToRegExp(pattern) {
 }
 
 function isTargetUrl(url, targetUrls) {
-  const targets = splitTargetUrls(targetUrls);
-  if (targets.length === 0) {
-    return false;
+  return Boolean(findMatchedTargetRule(url, targetUrls));
+}
+
+function isUrlPatternMatch(url, target) {
+  if (target.includes("*")) {
+    return wildcardToRegExp(target).test(url);
   }
 
-  return targets.some((target) => {
-    if (target.includes("*")) {
-      return wildcardToRegExp(target).test(url);
-    }
+  if (/^https?:\/\//i.test(target)) {
+    return url.startsWith(target);
+  }
 
-    if (/^https?:\/\//i.test(target)) {
-      return url.startsWith(target);
-    }
+  return url.includes(target);
+}
 
-    return url.includes(target);
-  });
+function findMatchedTargetRule(url, targetUrls) {
+  const rules = parseTargetRules(targetUrls);
+  if (rules.length === 0) {
+    return null;
+  }
+
+  for (const rule of rules) {
+    if (isUrlPatternMatch(url, rule.pattern)) {
+      return rule;
+    }
+  }
+
+  return null;
 }
 
 async function updateActionByResult(tabId, result, threshold) {

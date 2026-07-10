@@ -1,8 +1,15 @@
 const runButton = document.getElementById("run");
+const queryInput = document.getElementById("query");
 const statusEl = document.getElementById("status");
 const resultEl = document.getElementById("result");
 
 runButton.addEventListener("click", runIngestForCurrentTab);
+queryInput?.addEventListener("keydown", (event) => {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    runIngestForCurrentTab();
+  }
+});
 loadLastResult();
 
 async function loadLastResult() {
@@ -26,17 +33,27 @@ async function loadLastResult() {
 
 async function runIngestForCurrentTab() {
   runButton.disabled = true;
+  if (queryInput) {
+    queryInput.disabled = true;
+  }
   setStatus("実行中...");
   resultEl.textContent = "現在のタブ情報を送信しています。";
 
   try {
-    const result = await chrome.runtime.sendMessage({ type: "dlchecker:runCurrentTab" });
+    const manualQuery = queryInput?.value?.trim() || "";
+    const result = await chrome.runtime.sendMessage({
+      type: "dlchecker:runCurrentTab",
+      query: manualQuery
+    });
     renderResult(result, { source: "manual", timestamp: Date.now() });
   } catch (error) {
     setStatus("失敗", true);
     resultEl.textContent = error?.message || "実行に失敗しました";
   } finally {
     runButton.disabled = false;
+    if (queryInput) {
+      queryInput.disabled = false;
+    }
   }
 }
 
