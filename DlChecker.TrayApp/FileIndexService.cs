@@ -5,6 +5,7 @@ namespace DlChecker.TrayApp;
 
 internal sealed class FileIndexService : IDisposable
 {
+    private readonly ConcurrentDictionary<string, IndexedFile> _allFiles = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, IndexedFile> _files = new(StringComparer.OrdinalIgnoreCase);
     private readonly object _sync = new();
     private readonly List<FileSystemWatcher> _watchers = new();
@@ -49,11 +50,13 @@ internal sealed class FileIndexService : IDisposable
             }
         }
 
-        _files.Clear();
+        _allFiles.Clear();
         foreach (var pair in latest)
         {
-            _files[pair.Key] = pair.Value;
+            _allFiles[pair.Key] = pair.Value;
         }
+
+        RefreshVisibleFiles();
     }
 
     public void ChangeRootFolder(string newRoot)
@@ -99,6 +102,20 @@ internal sealed class FileIndexService : IDisposable
     public void Dispose()
     {
         DisposeWatchers();
+    }
+
+    private void RefreshVisibleFiles()
+    {
+        _files.Clear();
+
+        foreach (var fileGroup in _allFiles.Values
+                     .GroupBy(file => file.FileName, StringComparer.OrdinalIgnoreCase))
+        {
+            var selected = fileGroup
+                .OrderBy(file => file.FullPath, StringComparer.OrdinalIgnoreCase)
+                .First();
+            _files[selected.FileName] = selected;
+        }
     }
 
     private static string EnsureFolder(string rootFolder)
@@ -310,7 +327,8 @@ internal sealed class FileIndexService : IDisposable
             return;
         }
 
-        _files[canonicalPath] = BuildFile(canonicalPath);
+        _allFiles[canonicalPath] = BuildFile(canonicalPath);
+        RefreshVisibleFiles();
     }
 
     private void OnRenamed(string oldPath, string newPath)
@@ -318,17 +336,20 @@ internal sealed class FileIndexService : IDisposable
         var oldCanonicalPath = CanonicalizePath(oldPath);
         var newCanonicalPath = CanonicalizePath(newPath);
 
-        _files.TryRemove(oldCanonicalPath, out _);
+        _allFiles.TryRemove(oldCanonicalPath, out _);
         if (File.Exists(newCanonicalPath))
         {
-            _files[newCanonicalPath] = BuildFile(newCanonicalPath);
+            _allFiles[newCanonicalPath] = BuildFile(newCanonicalPath);
         }
+
+        RefreshVisibleFiles();
     }
 
     private void OnDeleted(string path)
     {
         var canonicalPath = CanonicalizePath(path);
-        _files.TryRemove(canonicalPath, out _);
+        _allFiles.TryRemove(canonicalPath, out _);
+        RefreshVisibleFiles();
     }
 
     private static IndexedFile BuildFile(string path)
